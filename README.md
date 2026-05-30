@@ -232,9 +232,13 @@ This produces a disparity map but with significant noise, since no spatial smoot
 
 ---
 
-### 3. SGM Path Aggregation *(in progress)*
+### 3. SGM Path Aggregation
 
-SGM improves on WTA by aggregating costs along multiple 1D paths through the image. The cost along a path in direction **r** is computed via dynamic programming:
+SGM improves on WTA by aggregating costs along **8 directions** simultaneously. For each direction **r**, a path cost is propagated via dynamic programming from one image border to the other.
+
+#### The Recurrence
+
+For a pixel **p** at disparity **d**, moving along direction **r**:
 
 ```
 L_r(p, d) = C(p, d) + min{
@@ -248,32 +252,85 @@ L_r(p, d) = C(p, d) + min{
 | Symbol | Meaning |
 |--------|---------|
 | p | current pixel position |
-| r | path direction (e.g., left→right, top→bottom, diagonal) |
+| r | one of 8 path directions: →, ←, ↓, ↑, ↘, ↙, ↗, ↖ |
 | d | disparity hypothesis |
-| P1 | small penalty for disparity change of ±1 |
-| P2 | large penalty for disparity change > 1 |
+| C(p, d) | raw block-SSD cost at this pixel and disparity |
+| P1 | penalty for a disparity change of ±1 (smooth surfaces) |
+| P2 | penalty for a disparity change > 1 (depth discontinuities) |
 
-The subtraction of `min_k L_r(p-r, k)` prevents cost values from growing unboundedly along the path.
+The four terms inside the `min{}` correspond to:
+1. Staying at the same disparity as the previous pixel — no penalty
+2. Stepping disparity down by 1 — small penalty P1
+3. Stepping disparity up by 1 — small penalty P1
+4. Any larger disparity jump — large penalty P2
 
-The aggregated cost is the sum over all paths (typically 8 or 16 directions):
+The subtraction of `min_k L_r(p-r, k)` normalizes path costs to prevent values from growing unboundedly along the path.
+
+At image borders there is no previous pixel, so the path is seeded with the raw cost:
+
+```
+L_r(p_border, d) = C(p_border, d)
+```
+
+#### Aggregation
+
+The aggregated cost sums contributions from all 8 paths:
 
 ```
 S(p, d) = Σ_r  L_r(p, d)
 ```
 
-The final disparity is:
+#### Final Disparity
+
+Winner-take-all on the aggregated cost:
 
 ```
 d*(p) = argmin_d  S(p, d)
 ```
 
-The penalties P1 and P2 encode a smoothness prior: small disparity changes (depth boundaries) are penalized mildly (P1), while large jumps are penalized heavily (P2), unless the image evidence is strong. A common adaptive strategy is to make P2 inversely proportional to the intensity gradient at the pixel:
+#### Parameters Used
+
+| Parameter | Value | Role |
+|-----------|-------|------|
+| P1 | 300 | Penalizes ±1 disparity steps — allows gradual depth slopes |
+| P2 | 2300 | Penalizes larger jumps — enforces piecewise-smooth surfaces |
+| Directions | 8 | →←↓↑↘↙↗↖ |
+| Max disparity D | 96 px | Search range |
+
+---
+
+### 4. 3D Point Cloud Reconstruction (Dense)
+
+The same triangulation formula used in sparse matching is applied densely to every valid pixel:
 
 ```
-P2_adaptive = P2 / |I(p) - I(p-r)|
+Z(x, y) = (f · B) / (d*(x, y) + doffs)
+X(x, y) = (x - cx) · Z / f
+Y(x, y) = (y - cy) · Z / f
 ```
 
-This allows SGM to preserve sharp depth discontinuities at object boundaries.
+Pixels where `d* = 0` or `Z > 8000 mm` are masked as invalid.
+
+---
+
+### 5. Comparison with OpenCV SGBM
+
+OpenCV's `StereoSGBM` uses the same algorithm but is implemented in optimized C++ with additional post-processing:
+
+| Setting | This implementation | OpenCV SGBM |
+|---------|-------------------|-------------|
+| P1 | 300 | 8 · 3 · 5² = 600 |
+| P2 | 2300 | 32 · 3 · 5² = 2400 |
+| Post-processing | none | speckle filter, uniqueness ratio, disp12MaxDiff |
+| Mode | 8-direction | `STEREO_SGBM_MODE_SGBM_3WAY` (full 8-dir) |
+
+**Disparity map comparison** — Naive WTA (top), SGM from scratch (middle), OpenCV SGBM (bottom):
+
+![Disparity comparison](figures/disparity_comparison_all3.png)
+
+**3D point cloud comparison** — SGM from scratch (left) vs OpenCV SGBM (right), top-down view:
+
+![Point cloud comparison](figures/sgm_point_cloud_comparison.png)
 
 ---
 
@@ -302,7 +359,9 @@ opencv-python   (image I/O only)
 
 ## Results
 
-| Method | Matches / Coverage | Mean Disp. Error |
-|--------|--------------------|-----------------|
-| Sparse (Harris + SSD) | 477 points | 17.46 px |
-| SGM (WTA baseline) | dense | — (aggregation pending) |
+| Method | Coverage | Notes |
+|--------|----------|-------|
+| Sparse (Harris + SSD) | 477 points | MAE 17.46 px vs ground truth |
+| SGM — Naive WTA | dense (500×741) | noisy, no spatial regularization |
+| SGM — 8-direction DP | dense (500×741) | P1=300, P2=2300, 96 disparities |
+| OpenCV SGBM | dense (500×741) | + speckle filter, uniqueness ratio |
