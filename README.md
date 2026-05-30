@@ -191,6 +191,14 @@ where (cx, cy) = (311.19, 254.88) is the principal point of the left camera (sca
 
 **Result:** 477 colored 3D points. Mean absolute disparity error vs. ground truth: **17.46 px**.
 
+**Sparse disparity map** — each dot is a matched corner, colored by disparity value (brighter = closer):
+
+![Sparse disparity map](figures/sparse_disparity_map.png)
+
+**3D point cloud** — reconstructed from the 477 matched corners (front view, colored by image RGB):
+
+![Sparse point cloud](figures/sparse_point_cloud.png)
+
 ---
 
 ## Part 2 — Semi-Global Matching (SGM)
